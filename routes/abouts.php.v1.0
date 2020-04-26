@@ -1,0 +1,673 @@
+<?php
+use \Psr\Http\Message\ServerRequestInterface as Request;
+use \Psr\Http\Message\ResponseInterface as Response;
+use Psr\Http\Message\UploadedFileInterface;
+use Slim\Http\UploadedFile;
+use \Firebase\JWT\JWT;
+
+//$app = new \Slim\App;
+
+//const b_type = "about";
+//define("B_TYPE", "about");
+//$b_type = 'about';
+// Get Single abouts
+$app->get('/api/abouts/{num}' , function(Request $request , Response $response) {
+
+    $num = $request->getAttribute('num');
+
+    // GET DB Object
+    $db = new db();
+    // Connect
+    $db = $db->connect();
+
+    $sql = "select * from cook_about where num=:num";
+    $sql_file = "select *, concat('/api/', b_type, 's/', b_num, '/files/', num ) as file_url , concat('/uploads/about/', filename) as file_path from cook_file where b_type=:b_type and b_num =:b_num and is_del = 'N'";
+
+    $sql_hit_update = "UPDATE cook_about SET hit = (nullif(hit,0) + 1) WHERE num = :num AND id <> :id";
+
+    try {
+
+        $stmt_hit_update = $db->prepare($sql_hit_update);
+        $stmt_hit_update->bindParam(":num", $num, PDO::PARAM_INT);
+        $stmt_hit_update->bindParam(":id", $_SESSION['userid'], PDO::PARAM_STR);
+        $stmt_hit_update->execute();
+
+        $stmt = $db->prepare($sql);
+        $stmt->bindParam(":num", $num, PDO::PARAM_INT);
+        $stmt->execute();
+        if ($stmt->rowCount() == 0) {
+            $resultData = array('result' => '404', 'message' => '', 'data' => '{"error" : {"text" : "존재하지 않는 글입니다."}}');
+            throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
+        $abouts = $stmt->fetchAll(PDO::FETCH_OBJ); //FETCH_ASSOC
+
+        $stmt_file = $db->prepare($sql_file);
+        $stmt_file->bindValue(':b_type', 'about');
+        $stmt_file->bindValue(':b_num', $num, PDO::PARAM_INT);
+        $stmt_file->execute();
+
+        $abouts['files'] = $stmt_file->fetchAll(PDO::FETCH_OBJ);
+
+        $db = null;
+        //https://m.blog.naver.com/wildr0se/220599750842
+        $resultData = array('result' => '200', 'message' => '', 'data' => $abouts);
+        return $response
+            ->withStatus(200)
+            //->getBody()
+            ->write(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        //echo json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+
+    }catch(CookException $e){
+        throw $e;
+    }catch(Exception $e){
+        $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : '.$e->getMessage().'}}');
+        throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+    }
+
+    //return $response;
+});
+
+//조회수 증가
+$app->put('/api/abouts/{num}/hits' , function(Request $request , Response $response, array $args){
+    $db = new db();
+    $db->connect();
+
+    $num = $args['num'];
+
+    //인증검사
+    $_SESSION['userid'] = "admin";
+
+    $sql = "UPDATE about_cook SET hit = isnull(hit,0) + 1 WHERE num = :num AND id <> :id";
+
+    try {
+        $stmt=$db->prepare($sql);
+        $stmt->bindParam(':num', $num, PDO::PARAM_INT);
+        $stmt->bindParam(':id', $_SESSION['userid'], PDO::PARAM_STR);
+        $stmt->execute();
+        $db = null;
+    } catch (Exception $e) {
+        $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : '.$e->getMessage().'}}');
+        throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+    }
+
+})->setName("about-hit-update");
+
+
+// Get All Customers
+///api/{btype} <-- 왜 안되는지?
+$app->get('/api/abouts' , function(Request $request , Response $response){
+
+    // GET DB Object
+    $db = new db();
+    // Connect
+    $db = $db->connect();
+    $num = $request->getAttribute('btype');
+
+    $page = $request->getParam('page', $default=1);
+    $offset = $request->getParam('offset', $default=10);
+    $start_limit = ($page - 1) * $offset;
+
+    //$sql = "select * from cook_memo order by num desc limit $start_limit, $offset";
+    $sql = "select * from cook_about order by num desc limit :start_limit, :offset";
+
+    try{
+
+        //http://servedev.tistory.com/42
+        $db->setAttribute(PDO::ATTR_EMULATE_PREPARES, false); //limit(동적쿼리) 로 인해 사용, true로 하면 오류
+
+        $stmt = $db->prepare($sql);
+        $stmt->bindParam(':start_limit',$start_limit, PDO::PARAM_INT);
+        $stmt->bindParam(':offset',$offset, PDO::PARAM_INT);
+        $stmt->execute();
+
+        if ($stmt->rowCount() == 0) {
+            $resultData = array('result' => '404', 'message' => '', 'data' => '{"error" : {"text" : "존재하지 않는 글입니다."}}');
+            throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
+
+        $abouts = $stmt->fetchAll(PDO::FETCH_OBJ);
+        $db = null;
+        $resultData = array('result' => '200', 'message' => '.', 'data' => $abouts);
+        return $response
+                    ->withStatus(200)
+                    //->getBody()
+                    ->write(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+    }catch(CookException $e){
+        throw $e;
+    }catch(Exception $e){
+        $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : '.$e->getMessage().'}}');
+        throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+
+    }
+});
+
+// insert memo
+$app->post('/api/abouts[/{num}]' , function(Request $request , Response $response, array $args) {
+    //echo 'CUSTOMERS';
+
+    // GET DB Object
+    $db = new \Lib\db();
+    // Connect
+    $db = $db->connect();
+
+    $b_type = "about";
+
+    //인증체크
+    $token = $request->getAttribute('decoded_token_data');
+    $user = objectToArray($token['user']);
+//    if (!isset($user['id'])) {
+//        $resultData = array('result' => '401', 'message' => '', 'data' => '{"error" : {"text" : "인증이 필요합니다."}}');
+//        throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+//    }
+
+
+    //필수필드조사
+    //업로드가 안되는 경우에는 폼데이타도 넘어오지 않아서 여기서부터 오류가 발생함.
+    $data = $request->getParsedBody(); //application/x-www-form-urlencoded, multipart/form-data, post만 됨...
+    //$key_arr = array('id', 'name', 'nick', 'content', 'subject');
+    $key_arr = array('content', 'subject');
+    foreach ($key_arr as $key_name) {
+        if (!array_key_exists($key_name, $data) || empty($data[$key_name])) {
+            $resultData = array('result' => '400', 'message' => '', 'data' => '{"error" : {"text" : ' . $key_name . '"의 값이 없습니다."}}');
+            throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
+    }
+
+    $abouts = [];
+//    $abouts['id'] = filter_var($data['id'], FILTER_SANITIZE_STRING); //빈 값이 db에 적용되기 시작해서 필드 유효성 검사 적용
+    $abouts['id'] = $user['id']; //빈 값이 db에 적용되기 시작해서 필드 유효성 검사 적용
+    $abouts['name'] = $user['name'];
+    $abouts['nick'] = $user['nick'];
+    $abouts['is_html'] = filter_var($data['html_ok'], FILTER_SANITIZE_STRING);
+    $abouts['subject'] = filter_var($data['subject'], FILTER_SANITIZE_FULL_SPECIAL_CHARS); //htmlspecialchars
+    if ($abouts['is_html'] == "y") {
+        $abouts['content'] = filter_var($data['content'], FILTER_SANITIZE_SPECIAL_CHARS);
+    } else {
+        $abouts['content'] = filter_var($data['content'], FILTER_SANITIZE_FULL_SPECIAL_CHARS); //htmlspecialchars
+    }
+    $abouts['files'] = array();
+
+    //파일업로드
+    //임시 디렉토리에서 업로드한 파일정보를 가져온다.
+    //업로드할 때 에러가 나타나면 400으로 클라이언트로 돌려준다.
+    //이미지 파일 유무를 판단해서 아닌 경우는 415를 보낸다.
+    //파일크기가 5000000byte 이상인 경우도 400으로 클라이언트로 돌려보낸다.
+    //업로드한 파일을 upload 폴더로 옮긴다. 각 게시판 폴더 아래에 위치한다.
+    //업로드한 파일은 slim에 있는 함수를 적용해서 이름붙인다.
+    $isImage = true;
+    $directory = $this->get('uploads');
+    $upload_errors = $this->get('upload_errors');
+    $uploadedFiles = $request->getUploadedFiles();
+
+    $image_type_array = array('image/gif', 'image/jpeg', 'image/pjpeg', 'image/bmp', 'image/png');
+    foreach ($uploadedFiles['upfile'] as $upfile) { ///private/var/tmp/phpkAnv90
+        //return $response->getBody()->write(var_dump($upfile));
+
+        if (is_string($upfile)) {
+            $resultData = array('result' => '400', 'message' => '', 'data' => '{"error" : {"text" : "파일명을 upfile[] 로 업로드해주세요."}}');
+            throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
+
+        if ($upfile->getError() === UPLOAD_ERR_OK) { //https://securr/features.file-upload.errors.php
+            //$size = getimagesize($upfile); //파일경로까지 존재해야함...이건 안됨
+            //$mime_type = $size['mime'];
+            $mime_type = $upfile->getClientMediaType();
+            $org_filename = $upfile->getClientFilename();
+            $filename = moveUploadedFile($directory, 'about', $upfile);
+            $file_size = $upfile->getSize();
+
+            //if (!getimagesize($upoadedFile)) { //이미지가 아니라면..
+            if (!in_array(strtolower($mime_type), $image_type_array)) {
+                $resultData = array('result' => '415', 'message' => '', 'data' => '{"error" : {"text" : "JPG,BMP,PNG,GIF 이미지 파일만 업로드 가능합니다!"}}');
+                throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            }
+            if ($file_size > 50000000) {
+                $resultData = array('result' => '413', 'message' => '', 'data' => '{"error" : {"text" : "업로드된 파일크기가 5Mbyte를 넘습니다.}}');
+                throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            }
+            $file_infos = array("org_filename" => $org_filename
+            , "filename" => $filename
+            , "mime_type" => $mime_type
+            , "file_size" => $file_size);
+            array_push($abouts['files'], $file_infos);
+        } else {
+            $upload_error_code = $upfile->getError();
+            //$data = array('result' => '500', 'message' => 'Exception!', 'data' => '');
+            $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : ' . in_array($upload_error_code, $upload_errors) . '}}');
+            throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
+    }
+
+    $sql = "INSERT INTO cook_about (id, name, nick, subject, content, regist_day, is_html, hit)";
+    $sql .= " VALUES(:id, :name, :nick, :subject, :content, :regist_day, :is_html, 0)";
+
+    $sql_file = "INSERT INTO cook_file (b_type, id, b_num, org_filename, filename, mime_type, file_size, regist_day)";
+    $sql_file .= " VALUES(:b_type, :id, :b_num, :org_filename, :filename, :mime_type, :file_size, :regist_day) ";
+    //sql_file .= " ON DUPLICATE KEY UPDATE b_type=:b_type, b_num = :b_num, num=:num";
+
+    try{
+
+        $stmt = $db->prepare($sql);
+        $stmt->bindParam(':id',$abouts['id'], PDO::PARAM_STR);
+        $stmt->bindParam(':name',$abouts['name'], PDO::PARAM_STR);
+        $stmt->bindParam(':nick',$abouts['nick'], PDO::PARAM_STR);
+        $stmt->bindParam(':subject',$abouts['subject'], PDO::PARAM_STR);
+        $stmt->bindParam(':content',$abouts['content'], PDO::PARAM_STR);
+        $stmt->bindParam(':regist_day',date("Y-m-d(H:i)"), PDO::PARAM_STR);
+        $stmt->bindParam(':is_html',$abouts['is_html'], PDO::PARAM_STR);
+
+        $db->beginTransaction();
+        $stmt->execute();
+        $abouts['num'] = $db->lastInsertId(); //commit 전 호출해야함
+
+
+        //파일데이타의 멀티-insert
+        //https://code.i-harness.com/ko/q/11f320
+        //데이타가 많지 않으므로...
+        $stmt_file = $db->prepare($sql_file);
+//        array_push($abouts['files'], $file_infos);
+        $file_array = array();
+        foreach($abouts['files'] as $file_infos) {
+            //return $response->write(print_r($file_infos));
+            $file_infos['b_type'] = $b_type;
+            $file_infos['b_num'] = $abouts['num'];
+            $file_infos['id'] = $abouts['id'];
+            $file_infos['regist_day'] = date("Y-m-d(H:i)");
+            $stmt_file->bindParam(':b_type', $file_infos["b_type"],  PDO::PARAM_STR);
+            $stmt_file->bindParam(':b_num', $file_infos["b_num"], PDO::PARAM_INT);
+            $stmt_file->bindParam(':id', $file_infos["id"], PDO::PARAM_STR);
+            $stmt_file->bindParam(':org_filename', $file_infos["org_filename"], PDO::PARAM_STR);
+            $stmt_file->bindParam(':filename', $file_infos["filename"], PDO::PARAM_STR);
+            $stmt_file->bindParam(':mime_type', $file_infos["mime_type"], PDO::PARAM_STR);
+            $stmt_file->bindParam(':file_size', $file_infos["file_size"],PDO::PARAM_INT);
+            $stmt_file->bindParam(':regist_day',$file_infos["regist_day"], PDO::PARAM_STR);
+            $stmt_file->execute();
+            $file_infos['num'] = $db->lastInsertId(); //commit 전 호출해야함;
+            $file_infos['file_url'] = '/api/abouts/'.$abouts['num'].'/files/'.$file_infos['num'];
+            $file_infos['file_path'] = '/uploads/about/'.$file_infos['filename'];
+            array_push($file_array, $file_infos);
+        }
+        $abouts['files'] = array_replace($abouts['files'], $file_array);
+
+
+
+        $db->commit();
+
+        $db = null;
+        $resultData = array('result' => '201', 'message' => '', 'data' => $abouts);
+        return $response
+            ->withHeader('Location','/cook/api/abouts/'.$abouts['num'])
+            ->withStatus(201)
+            //->getBody()
+            ->write(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+
+    }catch(CookException $e){
+        throw $e;
+    }catch(Exception $e){
+        $db->rollBack();
+        //$data = array('result' => '500', 'message' => 'Exception!', 'data' => '');
+        $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : '.$e->getMessage().'}}');
+        throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+
+    }
+})->add($container->get('jwtAuth'))->add($container->get('refreshAuth'));
+
+// update memo
+$app->put('/api/abouts/{num}' , function(Request $request , Response $response, array $args){
+    //echo 'CUSTOMERS';
+
+    // GET DB Object
+    $db = new db();
+    // Connect
+    $db = $db->connect();
+
+    $num = $args['num'];
+    $data = $request->getParsedBody(); //application/x-www-form-urlencoded, multipart/form-data
+
+    //인증검사
+    $token = $request->getAttribute('decoded_token_data');
+    $user = objectToArray($token['user']);
+//    if (!isset($_SESSION['userid'])) {
+//        $resultData = array('result' => '401', 'message' => '', 'data' => '{"error" : {"text" : "인증이 필요합니다."}}');
+//        throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+//    }
+
+    //수정권한과 리소스 존재여부 검사, 역시 middleware로...
+    $sql = "SELECT id FROM cook_about WHERE num=:num";
+    try{
+        $stmt = $db->prepare($sql);
+        $stmt->bindParam(':num',$num, PDO::PARAM_INT);
+        //$stmt->bindParam(':id',$_SESSION['userid'], PDO::PARAM_STR);
+        $stmt->execute();
+
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        //echo "rowcount:".$stmt->rowCount();
+        //return $response;
+
+        if ($stmt->rowCount() == 0) {
+            $resultData = array('result' => '404', 'message' => '', 'data' => '{"error" : {"text" : "존재하지 않는 글입니다."}}');
+            throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
+        //배열처리없이 칼럼 하나만 가져오는 건 없낭?
+        if ($result['id'] != $user['id']) {
+            $resultData = array('result' => '403', 'message' => '', 'data' => '{"error" : {"text" : "작성자만 수정할 수 있습니다."}}');
+            throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+        }
+
+    }catch(CookException $e){
+        throw $e;
+    }catch(Exception $e){
+        //$data = array('result' => '500', 'message' => 'Exception!', 'data' => '');
+        //나중에 로그로 남기며 정확한 exception은 client에 보내지 않기로 변경해야함.
+        $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : '.$e->getMessage().'}}');
+        throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+    }
+
+    //수정권한과 리소스 존재여부 검사, 역시 middleware로...
+    if (!empty($data['file_num'])) {
+        $sql = "SELECT id FROM cook_file WHERE b_num=:b_num AND b_type=:b_type AND num in (" . implode(',', $data['file_num']) . ")";
+
+        try {
+            $stmt = $db->prepare($sql);
+            $stmt->bindParam(':b_num', $num, PDO::PARAM_INT);
+            $stmt->bindValue(':b_type', 'about', PDO::PARAM_STR);
+            //$stmt->bindParam(':id',$_SESSION['userid'], PDO::PARAM_STR);
+            $stmt->execute();
+
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            //echo "rowcount:".$stmt->rowCount();
+            //return $response;
+
+            if ($stmt->rowCount() == 0) {
+                $resultData = array('result' => '404', 'message' => '', 'data' => '{"error" : {"text" : "존재하지 않는 파일입니다."}}');
+                throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            }
+            //배열처리없이 칼럼 하나만 가져오는 건 없낭?
+            if ($result['id'] != $user['id']) {
+                $resultData = array('result' => '403', 'message' => '', 'data' => '{"error" : {"text" : "작성자만 수정할 수 있습니다."}}');
+                throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            }
+
+        } catch (CookException $e) {
+            throw $e;
+        } catch (Exception $e) {
+            //$data = array('result' => '500', 'message' => 'Exception!', 'data' => '');
+            //나중에 로그로 남기며 정확한 exception은 client에 보내지 않기로 변경해야함.
+            $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : ' . $e->getMessage() . '}}');
+            throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
+    }
+    //필수필드조사
+    //업로드가 안되는 경우에는 폼데이타도 넘어오지 않아서 여기서부터 오류가 발생함.
+    //$key_arr = array('id', 'name', 'nick', 'content', 'subject');
+    $key_arr = array('content', 'subject');
+    foreach ($key_arr as $key_name) {
+        if (!array_key_exists($key_name, $data) || empty($data[$key_name])) {
+            $resultData = array('result' => '400', 'message' => '', 'data' => '{"error" : {"text" : ' . $key_name . '"의 값이 없습니다."}}');
+            throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+        }
+    }
+
+
+    $abouts = [];
+    $abouts['id'] = $user['id']; //빈 값이 db에 적용되기 시작해서 필드 유효성 검사 적용
+    $abouts['num'] = filter_var($num, FILTER_SANITIZE_NUMBER_INT); //빈 값이 db에 적용되기 시작해서 필드 유효성 검사 적용
+    $abouts['is_html'] = filter_var($data['html_ok'], FILTER_SANITIZE_STRING);
+    $abouts['subject'] = filter_var($data['subject'], FILTER_SANITIZE_FULL_SPECIAL_CHARS); //htmlspecialchars
+    if ($abouts['is_html'] == "y") {
+        $abouts['content'] = filter_var($data['content'], FILTER_SANITIZE_SPECIAL_CHARS);
+    } else {
+        $abouts['content'] = filter_var($data['content'], FILTER_SANITIZE_FULL_SPECIAL_CHARS); //htmlspecialchars
+    }
+    $abouts['files'] = array();
+    for ($i=0 ; $i < count($data['file_num']) ; $i++) {
+        $file_num =filter_var($data['file_num'][$i], FILTER_SANITIZE_NUMBER_INT);
+        $is_del =filter_var($data['is_del'][$i], FILTER_SANITIZE_STRING);
+        $file_infos = array("num"=>$file_num
+        ,"b_type"=> "about"
+        , "b_num" => $abouts['num']
+        , "is_del"=>$is_del);
+        array_push($abouts['files'], $file_infos);
+    }
+    //return $response->getBody()->write(count($data['is_del']));
+    //return $response->getBody()->write(print_r($abouts['files']));
+
+    //파일업로드
+    //임시 디렉토리에서 업로드한 파일정보를 가져온다.
+    //업로드할 때 에러가 나타나면 400으로 클라이언트로 돌려준다.
+    //이미지 파일 유무를 판단해서 아닌 경우는 415를 보낸다.
+    //파일크기가 5000000byte 이상인 경우도 400으로 클라이언트로 돌려보낸다.
+    //업로드한 파일을 upload 폴더로 옮긴다. 각 게시판 폴더 아래에 위치한다.
+    //업로드한 파일은 slim에 있는 함수를 적용해서 이름붙인다.
+    $isImage = true;
+    $directory = $this->get('uploads');
+    $upload_errors = $this->get('upload_errors');
+    $uploadedFiles = $request->getUploadedFiles();
+
+    $image_type_array = array('image/gif', 'image/jpeg', 'image/pjpeg', 'image/bmp', 'image/png');
+    //왜인지 postman에서는 파일정보가 제대로 넘어오지 않는 듯...$_FILES도 안됨...
+    foreach ($uploadedFiles['upfile'] as $upfile) { ///private/var/tmp/phpkAnv90
+        //return $response->getBody()->write(var_dump($upfile));
+
+        if (is_string($upfile)) {
+            $resultData = array('result' => '400', 'message' => '', 'data' => '{"error" : {"text" : "파일명을 upfile[] 로 업로드해주세요."}}');
+            throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
+
+        if ($upfile->getError() === UPLOAD_ERR_OK) { //https://securr/features.file-upload.errors.php
+            //$size = getimagesize($upfile); //파일경로까지 존재해야함...이건 안됨
+            //$mime_type = $size['mime'];
+            $mime_type = $upfile->getClientMediaType();
+            $org_filename = $upfile->getClientFilename();
+            $filename = moveUploadedFile($directory, 'about', $upfile);
+            $file_size = $upfile->getSize();
+
+            //if (!getimagesize($upoadedFile)) { //이미지가 아니라면..
+            if (!in_array(strtolower($mime_type), $image_type_array)) {
+                $resultData = array('result' => '415', 'message' => '', 'data' => '{"error" : {"text" : "JPG,BMP,PNG,GIF 이미지 파일만 업로드 가능합니다!"}}');
+                throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+            }
+            if ($file_size > 50000000) {
+                $resultData = array('result' => '413', 'message' => '', 'data' => '{"error" : {"text" : "업로드된 파일크기가 5Mbyte를 넘습니다.}}');
+                throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+            }
+            $file_infos = array("org_filename" => $org_filename
+            , "filename" => $filename
+            , "mime_type" => $mime_type
+            , "file_size" => $file_size
+            , "b_type"=> "about"
+            , "b_num" => $num
+            , "id" => $abouts['id']
+            , "regist_day"=>date("Y-m-d(H:i)")
+            , "is_del"=>"N");
+            array_push($abouts['files'], $file_infos);
+        } else {
+            $upload_error_code = $upfile->getError();
+            //$data = array('result' => '500', 'message' => 'Exception!', 'data' => '');
+            $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : ' . in_array($upload_error_code, $upload_errors) . '}}');
+            throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+        }
+    }
+
+    //return $response->getBody()->write(print_r($abouts['files']));
+
+    $sql = "UPDATE cook_about SET is_html = :is_html, subject = :subject, content = :content";
+    $sql .= " WHERE num = :num";
+
+    $sql_file = "INSERT INTO cook_file (num, b_type, b_num, id, org_filename, filename, mime_type, file_size, regist_day, is_del)";
+    $sql_file .= " VALUES(:num, :b_type, :b_num, :id, :org_filename, :filename, :mime_type, :file_size, :regist_day, :is_del) ";
+    $sql_file .= " ON DUPLICATE KEY UPDATE b_type=:b_type, b_num = :b_num, num=:num";
+
+
+    try{
+
+        $stmt = $db->prepare($sql);
+        $stmt->bindParam(':num',$num, PDO::PARAM_INT);
+        $stmt->bindParam(':subject',$abouts['subject'], PDO::PARAM_STR);
+        $stmt->bindParam(':is_html',$abouts['is_html'], PDO::PARAM_STR);
+        $stmt->bindParam(':content',$abouts['content'], PDO::PARAM_STR);
+
+        $db->beginTransaction();
+        $stmt->execute();
+
+        //여러개가 업로드되면 안됨, 보통은 일어나지 않음.
+        if ($stmt->rowCount() > 1) {
+            $db->rollBack();
+            //$data = array('result' => '500', 'message' => 'Exception!', 'data' => '');
+            $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : "오류가 발생했습니다."}}');
+            throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+        }
+
+        //기존 파일목록 데이타를 받는다. 클라이언트에서 삭제여부를 보내주는 걸로 처리
+
+        $file_array = array();
+        $stmt_file = $db->prepare($sql_file);
+        foreach($abouts['files'] as $file_infos) {
+            //return $response->write(print_r($file_infos));
+            $stmt_file->bindParam(':num', $file_infos['num'],  PDO::PARAM_STR);
+            $stmt_file->bindParam(':b_type', $file_infos['b_type'],  PDO::PARAM_STR);
+            $stmt_file->bindParam(':b_num', $file_infos['b_num'], PDO::PARAM_STR);
+            $stmt_file->bindParam(':id', $file_infos['id'], PDO::PARAM_STR);
+            $stmt_file->bindParam(':org_filename', $file_infos["org_filename"], PDO::PARAM_STR);
+            $stmt_file->bindParam(':filename', $file_infos["filename"], PDO::PARAM_STR);
+            $stmt_file->bindParam(':mime_type', $file_infos["mime_type"], PDO::PARAM_STR);
+            $stmt_file->bindParam(':file_size', $file_infos["file_size"],PDO::PARAM_INT);
+            $stmt_file->bindParam(':regist_day',date("Y-m-d(H:i)"), PDO::PARAM_STR);
+            $stmt_file->bindParam(':is_del',$file_infos["is_del"], PDO::PARAM_STR);
+            $stmt_file->execute();
+
+            $file_infos['num'] = empty($file_infos['num']) ? $db->lastInsertId() : $file_infos['num'] ; //commit 전 호출해야함;
+            $file_infos['file_url'] = '/api/abouts/'.$abouts['num'].'/files/'.$file_infos['num'];
+            $file_infos['file_path'] = '/uploads/about/'.$file_infos['filename'];
+            array_push($file_array, $file_infos);
+        }
+        $abouts['files'] = array_replace($abouts['files'], $file_array);
+
+        $db->commit();
+
+
+        $db = null;
+        $resultData = array('result' => '200', 'message' => '', 'data' => $abouts);
+        return $response
+            ->withStatus(200)
+            ->write(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+
+
+    }catch(CookException $e){
+        throw $e;
+    }catch(Exception $e){
+        $db->rollBack();
+        //$data = array('result' => '500', 'message' => 'Exception!', 'data' => '');
+        $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : '.$e->getMessage().'}}');
+        throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+
+    }
+})->add($container->get('jwtAuth'))->add($container->get('refreshAuth'));
+
+// update memo
+$app->delete('/api/abouts/{num}' , function(Request $request , Response $response, array $args){
+    //echo 'CUSTOMERS';
+
+    // GET DB Object
+    $db = new db();
+    // Connect
+    $db = $db->connect();
+
+    $num = $args['num'];
+
+    //인증검사
+    $token = $request->getAttribute('decoded_token_data');
+    $user = objectToArray($token['user']);
+//    if (!isset($_SESSION['userid'])) {
+//        $resultData = array('result' => '401', 'message' => '', 'data' => '{"error" : {"text" : "인증이 필요합니다."}}');
+//        throw new CookException(json_encode($resultData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+//    }
+
+    $data = $request->getParsedBody(); //application/x-www-form-urlencoded, multipart/form-data
+
+    //삭제권한과 리로스 존재여부 검사, 역시 middleware로...
+    $sql = "SELECT id FROM cook_about WHERE num=:num";
+    try{
+        $stmt = $db->prepare($sql);
+        $stmt->bindParam(':num',$num, PDO::PARAM_INT);
+        //$stmt->bindParam(':id',$_SESSION['userid'], PDO::PARAM_STR);
+        $stmt->execute();
+
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        //echo "rowcount:".$stmt->rowCount();
+        //return $response;
+
+        if ($stmt->rowCount() == 0) {
+            $resultData = array('result' => '404', 'message' => '', 'data' => '{"error" : {"text" : "존재하지 않는 글입니다."}}');
+            throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+        }
+        //배열처리없이 칼럼 하나만 가져오는 건 없낭?
+        if ($result['id'] != $user['id']) {
+            $resultData = array('result' => '403', 'message' => '', 'data' => '{"error" : {"text" : "작성자만 삭제할 수 있습니다."}}');
+            throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+        }
+
+    }catch(CookException $e){
+        throw $e;
+    }catch(Exception $e){
+        //$data = array('result' => '500', 'message' => 'Exception!', 'data' => '');
+        //나중에 로그로 남기며 정확한 exception은 client에 보내지 않기로 변경해야함.
+        $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : '.$e->getMessage().'}}');
+        throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+    }
+
+    $sql = "DELETE FROM cook_about";
+    $sql .= " WHERE num = :num AND id = :id";
+
+    $sql_file = "DELETE FROM cook_file";
+    $sql_file .= " WHERE b_type = :b_type AND b_num = :b_num";
+
+    try{
+
+        $stmt = $db->prepare($sql);
+        $stmt->bindParam(':num',$num, PDO::PARAM_INT);
+        $stmt->bindParam(':id',$user['id'], PDO::PARAM_STR);
+
+        $db->beginTransaction();
+        $stmt->execute();
+
+        //여러개가 삭제되면 안됨, 보통은 일어나지 않음.
+        if ($stmt->rowCount() > 1) {
+            $db->rollBack();
+            //$data = array('result' => '500', 'message' => 'Exception!', 'data' => '');
+            $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : "서버개발자에게 문의하세요."}}');
+            throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+        }
+
+        //파일 삭제
+        $stmt_file=$db->prepare($sql_file);
+        $stmt_file->bindValue(':b_type', 'about');
+        $stmt_file->bindValue(':b_num', $num, PDO::PARAM_INT);
+        $stmt_file->execute();
+
+        $db->commit();
+
+
+        $db = null;
+        $resultData = array('result' => '204', 'message' => '', 'data' => '삭제했습니다.');
+        return $response
+            ->withStatus(200)
+            ->write(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+
+    }catch(CookException $e){
+        throw $e;
+    }catch(Exception $e){
+        $db->rollBack();
+        //$data = array('result' => '500', 'message' => 'Exception!', 'data' => '');
+        $resultData = array('result' => '500', 'message' => '', 'data' => '{"error" : {"text" : '.$e->getMessage().'}}');
+        throw new CookException(json_encode($resultData,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
+
+    }
+})->add($container->get('jwtAuth'))->add($container->get('refreshAuth'));
+
+
+
+?>
